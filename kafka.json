@@ -29,12 +29,6 @@
       "Type" : "Number",
       "Default": 2
     },
-    "DockerImage" : {
-      "Description" : "Path of the Kafka Docker image (format: '[<registry>[:<port>]/]<repository>:<version>')",
-      "Type" : "String",
-      "Default" : "wurstmeister/kafka:latest"
-    },
-
     "Subnets" : {
       "Description" : "List of VPC subnet IDs for the cluster. Note: must match up with the passed AvailabilityZones.",
       "Type" : "List<AWS::EC2::Subnet::Id>"
@@ -52,19 +46,9 @@
       "Type" : "CommaDelimitedList",
       "Default" : ""
     },
-    "KafkaChroot": {
-      "Description": "The chroot (starting with /) for Kafka to use within zookeeper",
-      "Type": "String",
-      "Default": "/kafka"
-    },
     "ExhibitorLoadBalancer": {
       "Description": "Exhibitor load balancer DNS Name, in the form of http(s)://some-load.balancer.elb.amazonaws.com (no trailing slash).",
       "Type": "String"
-    },
-    "ManagerDockerImage": {
-        "Type": "String",
-        "Description": "Docker image running kafka manager.",
-        "Default": "sheepkiller/kafka-manager"
     },
     "ManagerClusterSize" : {
       "Description" : "Number of kafka manager nodes to launch",
@@ -85,34 +69,19 @@
         "hs1.8xlarge", "g2.2xlarge"
       ],
       "ConstraintDescription" : "must be a valid, HVM-compatible EC2 instance type."
+    },
+    "AssociatePublicIpAddress": {
+      "Description" : "(Optional) If false, EC2 instances will not be associated with a Public IP address.",
+      "Type" : "String",
+      "Default" : "true",
+      "AllowedPattern" : "true|false"
     }
   },
 
   "Mappings" : {
     "RegionMap" : {
-      "us-east-1" : {
-        "AMI" : "ami-96163afe"
-      },
-      "us-west-1" : {
-        "AMI" : "ami-117c9a55"
-      },
-      "us-west-2" : {
-        "AMI" : "ami-8d123ebd"
-      },
       "eu-west-1" : {
-        "AMI" : "ami-8be47afc"
-      },
-      "ap-southeast-1" : {
-        "AMI" : "ami-64b88936"
-      },
-      "ap-southeast-2" : {
-        "AMI" : "ami-abf48491"
-      },
-      "ap-northeast-1" : {
-        "AMI" : "ami-3d62953d"
-      },
-      "sa-east-1" : {
-        "AMI" : "ami-db1fa7c6"
+        "AMI" : "ami-c51e3eb6"
       }
     }
   },
@@ -142,11 +111,6 @@
             "Key" : "role",
             "Value" : "kafka-manager",
             "PropagateAtLaunch" : "true"
-          },
-          {
-            "Key": "Name",
-            "Value" : "Kafka Manager",
-            "PropagateAtLaunch" : "true"
           }
         ]
       }
@@ -172,11 +136,6 @@
             "Key" : "role",
             "Value" : "kafka",
             "PropagateAtLaunch" : "true"
-          },
-          {
-            "Key": "Name",
-            "Value" : "Kafka",
-            "PropagateAtLaunch" : "true"
           }
         ]
       }
@@ -188,7 +147,7 @@
         "KeyName" : { "Ref" : "KeyName" },
         "ImageId" : { "Fn::FindInMap" : [ "RegionMap", { "Ref" : "AWS::Region" }, "AMI"] },
         "SecurityGroups" : [ { "Ref" : "ServerSecurityGroup" }, { "Ref" : "AdminSecurityGroup" }  ],
-        "AssociatePublicIpAddress": "true",
+        "AssociatePublicIpAddress": { "Ref" : "AssociatePublicIpAddress" },
         "InstanceType" : { "Ref" : "InstanceType" },
         "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
           "#!/bin/bash -ex\n",
@@ -200,25 +159,63 @@
           "  exit 1\n",
           "}\n",
 
-          "curl -s http://stedolan.github.io/jq/download/linux64/jq > jq\n",
-          "chmod +x jq\n",
+          "#Install Java8 \n",
+          "yum -y update --security \n",
+          "yum -y install java-1.8.0-openjdk-devel aws-cfn-bootstrap \n",
+          "yum -y remove java-1.7.0-openjdk \n",
+          "export JAVA_HOME='/usr/lib/jvm/java-1.8.0-openjdk'  \n",
+          "#Setting the JVM TTL for DNS Name Lookups - AWS \n",
+          "cd $JAVA_HOME \n",
+          "cd jre/lib/security \n",
+          "sed -i '/networkaddress.cache.ttl=/ c\\networkaddress.cache.ttl=60' java.security \n",
+          "export KAFKA_HEAP_OPTS='-Xmx512M -Xms256M' \n",
 
-          "# Set up kafka connection using exhibitor data\n",
-          "export EX_DATA=`curl -s ", {"Ref": "ExhibitorLoadBalancer"}, "/exhibitor/v1/cluster/list`\n",
-          "export ZK_PORT=`echo $EX_DATA | ./jq -r '.port'`\n",
-          "export ZK_HOSTS=`echo $EX_DATA | ./jq -r '.servers | join(\",\")'`:$ZK_PORT\n",
-          "export ZK_CONNECT=$ZK_HOSTS", {"Ref": "KafkaChroot"} , "\n",
+          "# Download Confluent Kafka Open Source\n",
+          "rpm --import http://packages.confluent.io/rpm/3.1/archive.key \n",
+          "echo '[Confluent.dist]' > /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'name=Confluent repository (dist)' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'baseurl=http://packages.confluent.io/rpm/3.1/7' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'gpgcheck=1' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'gpgkey=http://packages.confluent.io/rpm/3.1/archive.key' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'enabled=1' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo '' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo '[Confluent]' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'name=Confluent repository' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'baseurl=http://packages.confluent.io/rpm/3.1' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'gpgcheck=1' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'gpgkey=http://packages.confluent.io/rpm/3.1/archive.key' >> /etc/yum.repos.d/confluent.repo  \n",
+          "echo 'enabled=1' >> /etc/yum.repos.d/confluent.repo  \n",
+          "yum clean all \n",
+          "yum -y install confluent-platform-oss-2.11 jq\n",
+
+          "#Set HOSTNAME value  \n",
+          "#Set HOSTNAME value  \n",
+          "HOSTNAME=\"\" \n",
+          "if [ ", { "Ref": "AssociatePublicIpAddress" }, " == \"true\" ] \n",
+          "then \n",
+		      "  HOSTNAME=`/opt/aws/bin/ec2-metadata --public-hostname | awk '{print $2}'`\n",
+          "else \n",
+          "  HOSTNAME=`/opt/aws/bin/ec2-metadata --local-hostname | awk '{print $2}' |  awk -F'.' '{print $1}'` \n",
+          "fi \n",
+
+          "sed -i \"/^127.0.0.1/ s/$/ $HOSTNAME/\" /etc/hosts \n",
+
+          "# Config Kafka\n",
           "export IP=`curl -s http://169.254.169.254/latest/meta-data/local-ipv4`\n",
+          "cd /etc/kafka \n",
+          "sed -i \"/broker.id=0/ c\\broker.id=${IP##*.}\" server.properties \n",
+          "export EX_DATA=`curl -s ", {"Ref": "ExhibitorLoadBalancer"}, "/exhibitor/v1/cluster/list`\n",
+          "export ZK_PORT=`echo $EX_DATA | jq -r '.port'`\n",
+          "export ZK_HOSTS=`echo $EX_DATA | jq -r '.servers | join(\":\" + env.ZK_PORT + \",\")'`:$ZK_PORT \n",
+          "sed -i \"/zookeeper.connect=/ c\\zookeeper.connect=${ZK_HOSTS}\" server.properties \n",
+          "sed -i \"s-#listeners=PLAINTEXT://:9092-listeners=PLAINTEXT://0.0.0.0:9092-\" server.properties \n",
+          "sed -i \"s-#advertised.listeners=PLAINTEXT://your.host.name:9092-advertised.listeners=PLAINTEXT://${IP}:9092-\" server.properties \n",
+          "sed -i '/confluent.support.metrics.enable=true/ c\\confluent.support.metrics.enable=false' server.properties \n",
+          "export KAFKA_JMX_OPTS=\"-Djava.rmi.server.hostname=${IP} -Dcom.sun.management.jmxremote.rmi.port=8004 -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.ssl=false \" \n",
+          "export JMX_PORT=8004 \n",
 
-          "# Set up and start the Kafka service\n",
-          "sudo docker pull ", { "Ref": "DockerImage" }, "\n",
-          "runit-service create kafka docker run -p 9092:9092",
-          " -e KAFKA_BROKER_ID=${IP##*.}",
-          " -e KAFKA_ADVERTISED_PORT=9092",
-          " -e KAFKA_ZOOKEEPER_CONNECT=$ZK_CONNECT",
-          " -e \"KAFKA_ADVERTISED_HOST_NAME=`ec2metadata --local-hostname`\"",
-          " ", { "Ref": "DockerImage" }, "\n",
-          "runit-service enable kafka\n",
+          "# Runnig Kafka\n",
+          "/usr/bin/kafka-server-start /etc/kafka/server.properties \n",
 
           "# All is well so signal success\n",
           "cfn-signal -e 0 -r \"Stack setup complete\" '", { "Ref" : "WaitHandle" }, "'\n",
@@ -234,7 +231,7 @@
           "KeyName" : { "Ref" : "KeyName" },
           "ImageId" : { "Fn::FindInMap" : [ "RegionMap", { "Ref" : "AWS::Region" }, "AMI"] },
           "SecurityGroups" : [ { "Ref" : "ServerSecurityGroup" }, { "Ref" : "AdminSecurityGroup" }  ],
-          "AssociatePublicIpAddress": "true",
+          "AssociatePublicIpAddress": { "Ref" : "AssociatePublicIpAddress" },
           "InstanceType" : {"Ref": "ManagerInstanceType"},
           "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
             "#!/bin/bash -ex\n",
@@ -246,22 +243,50 @@
             "  exit 1\n",
             "}\n",
 
-            "curl -s http://stedolan.github.io/jq/download/linux64/jq > jq\n",
-            "chmod +x jq\n",
+            "#Install Java8 \n",
+            "yum -y update --security \n",
+            "yum -y install java-1.8.0-openjdk-devel aws-cfn-bootstrap \n",
+            "yum -y remove java-1.7.0-openjdk \n",
+            "export JAVA_HOME='/usr/lib/jvm/java-1.8.0-openjdk'  \n",
+            "#Setting the JVM TTL for DNS Name Lookups - AWS \n",
+            "cd $JAVA_HOME \n",
+            "cd jre/lib/security \n",
+            "sed -i '/networkaddress.cache.ttl=/ c\\networkaddress.cache.ttl=60' java.security \n",
 
-            "# Set up kafka connection using exhibitor data\n",
+            "#Install Sbt and Jq \n",
+            "curl https://bintray.com/sbt/rpm/rpm | sudo tee /etc/yum.repos.d/bintray-sbt-rpm.repo  \n",
+            "yum -y install sbt jq \n",
+
+            "#Install Kafka Manager Using release \n",
+            "#mkdir -p /opt/kafka-manager  \n",
+            "#mkdir -p /tmp/kafka-manager  \n",
+            "#curl -Lo /tmp/kafka-manager.tar.gz https://github.com/yahoo/kafka-manager/archive/1.3.1.8.tar.gz \n",
+            "#tar -zxf /tmp/kafka-manager.tar.gz -C /tmp/kafka-manager --strip-components=1 \n",
+            "#rm -f /tmp/kafka-manager.tar.gz \n",
+
+            "#Install Kafka Manager Using git \n",
+            "yum -y install git \n",
+            "cd /tmp \n",
+            "git clone https://github.com/yahoo/kafka-manager.git \n",
+            "cd kafka-manager \n",
+            "git fetch origin pull/282/head:0.10.0 \n",
+            "git checkout 0.10.0 \n",
+            "echo 'scalacOptions ++= Seq(\"-Xmax-classfile-name\", \"200\")' >> build.sbt  \n",
+            "./sbt clean dist \n",
+            "cd /tmp \n",
+            "unzip /tmp/kafka-manager/target/universal/kafka-manager-*.zip \n",
+            "cd kafka-manager-* \n",
+            "cp -r . /opt/kafka-manager \n",
+            "rm -rf /tmp/kafka-manager-* /root/.sbt /root/.ivy2 \n",
+
+            "#Config Kafka Manager \n",
             "export EX_DATA=`curl -s ", {"Ref": "ExhibitorLoadBalancer"}, "/exhibitor/v1/cluster/list`\n",
-            "export ZK_PORT=`echo $EX_DATA | ./jq '.port'`\n",
-            "export ZK_HOSTS=`echo $EX_DATA | ./jq '.servers | join(\",\")'`:$ZK_PORT\n",
-            "export ZK_CONNECT=$ZK_HOSTS", {"Ref": "KafkaChroot"} , "\n",
+            "export ZK_PORT=`echo $EX_DATA | jq -r '.port'`\n",
+            "export ZK_HOSTS=`echo $EX_DATA | jq -r '.servers | join(\":\" + env.ZK_PORT + \",\")'`:$ZK_PORT \n",
 
-            "# Set up and start the Kafka Manager service\n",
-            "sudo docker pull ", { "Ref": "DockerImage" }, "\n",
-            "runit-service create kafkamanager docker run -p 9000:9000",
-            " -e KAFKA_ZOOKEEPER_CONNECT=$ZK_CONNECT",
-            " -e ZK_HOSTS=$ZK_CONNECT",
-            " ", { "Ref": "ManagerDockerImage" }, "\n",
-            "runit-service enable kafkamanager\n",
+            "#Running Kafka Manager \n",
+            "cd /opt/kafka-manager \n",
+            "/opt/kafka-manager/bin/kafka-manager \n",
 
             "# All is well so signal success\n",
             "cfn-signal -e 0 -r \"Stack setup complete\" '", { "Ref" : "WaitHandle" }, "'\n",
